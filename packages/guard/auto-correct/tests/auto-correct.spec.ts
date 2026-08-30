@@ -113,6 +113,13 @@ describe('coerceIssue type coercion', () => {
     expect(AutoCorrect.coerceIssue('pwsh', { command: 'Get-Process', foo: '120' })).toBeUndefined()
     expect(AutoCorrect.coerceIssue('pwsh', null)).toBeUndefined()
   })
+
+  it('flags a quote-wrapped whole-string value and unwraps it', () => {
+    const issue = AutoCorrect.coerceIssue('job_output', { job_id: '"pwsh-1"', timeout_ms: 180000 })
+    expect(issue?.problem).toContain('被引号包裹')
+    expect(issue?.corrected).toBe('pwsh-1')
+    expect(issue?.correctedArguments).toEqual({ job_id: 'pwsh-1', timeout_ms: 180000 })
+  })
 })
 
 describe('middleware deny', () => {
@@ -186,6 +193,52 @@ describe('middleware deny', () => {
       arguments: { job_id: 'pwsh-53', timeout_ms: 1800000 },
     })
     expect(allowed).toMatchObject({ isError: false })
+  })
+
+  it('denies a quote-wrapped string field with the corrected arguments JSON', async () => {
+    const ctx = await harness()
+    ctx.tools.register(defineContentToolFixture({
+      name: 'job_output',
+      description: 'read a job result',
+      parameters: {},
+      async execute() { return [{ type: 'text', text: 'ok' }] },
+    }))
+    // Real observed defect: `"job_id": "\"pwsh-1\""` — the value is the literal
+    // `"pwsh-1"` (quotes included), so the lookup fails with an unknown-job
+    // error. The middleware must deny and hand back the inner string.
+    const denied = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('quoted-job'),
+      name: 'job_output',
+      arguments: { job_id: '"pwsh-1"', timeout_ms: 180000 },
+    })
+    expect(denied.isError).toBe(true)
+    const text = resultText(denied)
+    expect(text).toContain('[dsh-auto-correct]')
+    expect(text).toContain('被引号包裹')
+    expect(text).toContain('"job_id":"pwsh-1"')
+
+    const allowed = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('clean-job'),
+      name: 'job_output',
+      arguments: { job_id: 'pwsh-1', timeout_ms: 180000 },
+    })
+    expect(allowed).toMatchObject({ isError: false })
+  })
+})
+
+describe('unwrapQuoted', () => {
+  it('unwraps double- and single-quoted whole-string values', () => {
+    expect(AutoCorrect.unwrapQuoted('"pwsh-1"')).toBe('pwsh-1')
+    expect(AutoCorrect.unwrapQuoted("'pwsh-1'")).toBe('pwsh-1')
+  })
+
+  it('leaves clean strings and quote-containing strings untouched', () => {
+    expect(AutoCorrect.unwrapQuoted('pwsh-1')).toBeUndefined()
+    expect(AutoCorrect.unwrapQuoted('"a" b"')).toBeUndefined()
+    expect(AutoCorrect.unwrapQuoted('')).toBeUndefined()
+    expect(AutoCorrect.unwrapQuoted('"')).toBeUndefined()
   })
 })
 

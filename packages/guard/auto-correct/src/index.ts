@@ -21,10 +21,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
-import { coerceIssue, commandIssue, containsJsonEnvelope, unwrapCommand } from './corrections.ts'
+import { coerceIssue, commandIssue, containsJsonEnvelope, unwrapCommand, unwrapQuoted } from './corrections.ts'
 import type { AutoCorrectIssue } from './corrections.ts'
 
-export { coerceIssue, commandIssue, containsJsonEnvelope, unwrapCommand }
+export { coerceIssue, commandIssue, containsJsonEnvelope, unwrapCommand, unwrapQuoted }
 export type { AutoCorrectIssue } from './corrections.ts'
 
 /** Cordis plugin name. */
@@ -68,7 +68,8 @@ const HYGIENE_RULES =
   + '- 调用 pwsh 时,arguments 必须是 JSON 对象,arguments.command 必须是纯命令文本。\n'
   + '- arguments.command 不能以 { 开头,不能内嵌 {\"command\": ...} 或 {\"arguments\": ...} 这类 JSON 结构。\n'
   + '- 命令应直接以可执行命令开头(如 $env:、Get-Process、python、cmd /c),不要在 command 里再包一层 JSON。\n'
-  + '- 参数类型必须正确:数值字段(timeout_ms、limit、max_tokens 等)必须传数字,不能传字符串;布尔字段(run_in_background、checked、enabled 等)必须传 true/false,不能传 "true"/"false" 字符串。'
+  + '- 参数类型必须正确:数值字段(timeout_ms、limit、max_tokens 等)必须传数字,不能传字符串;布尔字段(run_in_background、checked、enabled 等)必须传 true/false,不能传 "true"/"false" 字符串。\n'
+  + '- 字符串字段不要整个再用引号包一层:如 {"job_id": "\\"pwsh-1\\""} 应写成 {"job_id": "pwsh-1"},否则工具会拿到带引号的值导致查找失败。'
 
 /**
  * Build the model-facing denial reason from a detected defect: it states the

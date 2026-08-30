@@ -116,11 +116,32 @@ export function commandIssue(args: unknown): AutoCorrectIssue | undefined {
 }
 
 /**
- * Type-coercion defect detection, applied to EVERY tool call: an argument with
- * a known numeric field name whose value is a stringified number, or a known
- * boolean field name whose value is a `"true"`/`"false"` string, is the
- * recurring `invalid arguments: "X" must be a number/boolean` defect. The
- * repair is the full corrected arguments object the model can copy verbatim.
+ * A string whose ENTIRE value is wrapped in a matching pair of quote
+ * characters — e.g. `"job_id": "\"pwsh-1\""` where the value is the literal
+ * `"pwsh-1"` (quotes included). The tool receives the quotes and fails a
+ * lookup/parse; the inner string is the intended value.
+ */
+export function unwrapQuoted(value: string): string | undefined {
+  if (value.length < 2) return undefined
+  const first = value[0]
+  const last = value[value.length - 1]
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    const inner = value.slice(1, -1)
+    // A genuine string that happens to start and end with a quote would also
+    // contain internal quotes; only a clean wrapper is unwrapped.
+    if (!inner.includes(first)) return inner
+  }
+  return undefined
+}
+
+/**
+ * Type/format-coercion defect detection, applied to EVERY tool call:
+ * an argument with a known numeric field name whose value is a stringified
+ * number, a known boolean field name whose value is a `"true"`/`"false"`
+ * string, or ANY string value wrapped in an outer pair of quotes, is a
+ * recurring `invalid arguments: "X" must be a number/boolean` or
+ * lookup-failure defect. The repair is the full corrected arguments object
+ * the model can copy verbatim.
  */
 export function coerceIssue(tool: string, args: unknown): AutoCorrectIssue | undefined {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return undefined
@@ -147,6 +168,17 @@ export function coerceIssue(tool: string, args: unknown): AutoCorrectIssue | und
         problem: `arguments.${key} 是字符串 "${value}",而该字段应为布尔值`,
         corrected: value,
         correctedArguments: { ...record, [key]: value === 'true' },
+      }
+    }
+    if (typeof value === 'string') {
+      const innerQuoted = unwrapQuoted(value)
+      if (innerQuoted !== undefined) {
+        return {
+          tool,
+          problem: `arguments.${key} 的值被引号包裹("${value}"),应使用内层字符串 "${innerQuoted}"`,
+          corrected: innerQuoted,
+          correctedArguments: { ...record, [key]: innerQuoted },
+        }
       }
     }
   }
