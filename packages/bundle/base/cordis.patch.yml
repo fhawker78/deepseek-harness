@@ -437,6 +437,16 @@
         thresholds: [3, 5, 8]
         argumentsPreviewChars: 500
 
+    # Auto-correct middleware: denies malformed shell-tool call arguments with
+    # the exact corrected command to retry with, and adds a tool-argument
+    # hygiene prompt section.
+    - id: auto-correct
+      name: '@deepseek-ai/dsh-auto-correct'
+      config:
+        tools: [pwsh]
+        promptSection: true
+        denyMalformed: true
+
     # Every mode enables the stable model-facing web_search tool. The Web app's
     # per-agent presets additionally enable web_fetch; other products opt in by
     # overriding tool-web. DeepSeek search resolves the same DEEPSEEK_API_KEY

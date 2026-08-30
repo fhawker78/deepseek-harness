@@ -262,6 +262,8 @@
       "@deepseek-ai/dsh-attachment-local/invariant": ["./packages/attachment/attachment-local/src/invariant.ts"],
       "@deepseek-ai/dsh-authorization": ["./packages/credentials/authorization/src"],
       "@deepseek-ai/dsh-authorization/invariant": ["./packages/credentials/authorization/src/invariant.ts"],
+      "@deepseek-ai/dsh-auto-correct": ["./packages/guard/auto-correct/src"],
+      "@deepseek-ai/dsh-auto-correct/invariant": ["./packages/guard/auto-correct/src/invariant.ts"],
       "@deepseek-ai/dsh-base": ["./packages/bundle/base/src"],
       "@deepseek-ai/dsh-base/invariant": ["./packages/bundle/base/src/invariant.ts"],
       "@deepseek-ai/dsh-bash-local": ["./packages/shell/bash-local/src"],
