@@ -1,0 +1,12 @@
+# 独立安装补丁:把 dsh-auto-correct 接进无源码安装的 dsh。
+# 用法(在 dsh 安装根目录): dsh web --patch ./standalone.patch.yml
+# (或在等价启动命令上追加该参数;不同入口形态参见 INSTALL-standalone.md)
+
+- insert:
+    - id: auto-correct
+      name: '@deepseek-ai/dsh-auto-correct'
+      config:
+        tools: [pwsh]        # 命令信封规则受管工具,默认 [pwsh]
+        promptSection: true  # 注册卫生提示词段
+        denyMalformed: true  # 拦截坏调用并给出修正值
+        coerceTypes: true    # 跨工具类型强制(数字/布尔)
