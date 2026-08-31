@@ -245,6 +245,67 @@ describe('unwrapQuoted', () => {
   })
 })
 
+describe('redundantSandboxIssue', () => {
+  it('strips the redundant sandbox fields when justification says full-access', () => {
+    const issue = AutoCorrect.redundantSandboxIssue({
+      command: 'python tests\\_tmp_bt_multi_day_variant.py',
+      description: 'run backtest',
+      run_in_background: true,
+      sandbox_permissions: 'danger-full-access',
+      justification: '运行回测脚本（当前会话已 full-access，无需更宽）',
+    })
+    expect(issue?.problem).toContain('not strictly wider')
+    expect(issue?.correctedArguments).toEqual({
+      command: 'python tests\\_tmp_bt_multi_day_variant.py',
+      description: 'run backtest',
+      run_in_background: true,
+    })
+  })
+
+  it('leaves calls without the redundant marker untouched', () => {
+    expect(AutoCorrect.redundantSandboxIssue({ command: 'ls', sandbox_permissions: 'danger-full-access', justification: '写入构建产物' }))
+      .toBeUndefined()
+    expect(AutoCorrect.redundantSandboxIssue({ command: 'ls' })).toBeUndefined()
+    expect(AutoCorrect.redundantSandboxIssue(null)).toBeUndefined()
+  })
+})
+
+describe('redundant sandbox middleware', () => {
+  it('denies a pwsh call carrying redundant sandbox_permissions and hands back the stripped arguments', async () => {
+    const ctx = await harness()
+    const denied = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('red-sandbox'),
+      name: 'pwsh',
+      arguments: {
+        command: 'python tests\\_tmp_bt_multi_day_variant.py',
+        description: 'run backtest',
+        run_in_background: true,
+        sandbox_permissions: 'danger-full-access',
+        justification: '运行回测脚本（当前会话已 full-access，无需更宽）',
+      },
+    })
+    expect(denied.isError).toBe(true)
+    const text = resultText(denied)
+    expect(text).toContain('[dsh-auto-correct]')
+    expect(text).toContain('not strictly wider')
+
+    // The corrected arguments drop sandbox_permissions and justification.
+    const allowed = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('clean-sandbox'),
+      name: 'pwsh',
+      arguments: {
+        command: 'python tests\\_tmp_bt_multi_day_variant.py',
+        description: 'run backtest',
+        run_in_background: true,
+      },
+    })
+    expect(allowed).toMatchObject({ isError: false })
+    expect(resultText(allowed)).toBe('ran')
+  })
+})
+
 describe('prompt hygiene section', () => {
   it('contributes the auto-correct section after the persona', async () => {
     const ctx = await harness()

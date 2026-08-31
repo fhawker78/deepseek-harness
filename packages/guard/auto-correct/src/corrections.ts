@@ -32,6 +32,45 @@ const NUMERIC_FIELDS = ['timeout_ms', 'timeoutMs', 'limit', 'max_tokens', 'maxTo
  */
 const BOOLEAN_FIELDS = ['run_in_background', 'checked', 'autoRefresh', 'auto_refresh', 'enabled'] as const
 
+/**
+ * Redundant sandbox escalation: the call carries `sandbox_permissions` (and
+ * usually `justification`) even though the session is already at
+ * `danger-full-access`. The sandbox layer requires a STRICTLY wider mode, so
+ * the same-level escalation is rejected with
+ * `sandbox escalation to "..." is not strictly wider than this call's current
+ * mode`. The justification text usually tells the story ("当前会话已
+ * full-access，无需更宽"); the correction drops both fields.
+ */
+export type RedundantSandboxIssue = AutoCorrectIssue
+
+/** Phrases in `justification` that signal the call already runs full-access. */
+const REDUNDANT_SANDBOX_MARKERS =
+  /无需更宽|当前会话已|not strictly wider|already (?:at |in )?full|已.*(?:full|danger|更宽)/i
+
+/**
+ * Detect a redundant sandbox escalation pair on a shell-tool call. When the
+ * `justification` states the call already runs full-access, the
+ * `sandbox_permissions` field is necessarily rejected; the correction strips
+ * both fields so the model can retry the exact same command cleanly.
+ */
+export function redundantSandboxIssue(args: unknown): RedundantSandboxIssue | undefined {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return undefined
+  const record = args as Record<string, unknown>
+  const perms = record.sandbox_permissions
+  const why = record.justification
+  if (typeof perms !== 'string' || typeof why !== 'string') return undefined
+  if (!REDUNDANT_SANDBOX_MARKERS.test(why)) return undefined
+  const corrected: Record<string, unknown> = { ...record }
+  delete corrected.sandbox_permissions
+  delete corrected.justification
+  return {
+    tool: 'pwsh',
+    problem: `arguments.sandbox_permissions 请求的级别(${perms})与会话当前级别相同,已无更宽模式可升,该字段必然被拒("not strictly wider")`,
+    corrected: '',
+    correctedArguments: corrected,
+  }
+}
+
 /** Keys the middleware accepts as the real command payload inside a JSON envelope. */
 const COMMAND_KEYS = ['command', 'cmd', 'Command'] as const
 
