@@ -28,10 +28,10 @@ import type {
   ToolExecution,
   ToolExecutionResult,
 } from '@deepseek-ai/dsh-tools'
-import { coerceIssue, commandIssue, containsJsonEnvelope, redundantSandboxIssue, unwrapCommand, unwrapQuoted } from './corrections.ts'
+import { coerceIssue, commandIssue, containsJsonEnvelope, nestedArgsIssue, redundantSandboxIssue, unwrapCommand, unwrapQuoted } from './corrections.ts'
 import type { AutoCorrectIssue } from './corrections.ts'
 
-export { coerceIssue, commandIssue, containsJsonEnvelope, redundantSandboxIssue, unwrapCommand, unwrapQuoted }
+export { coerceIssue, commandIssue, containsJsonEnvelope, nestedArgsIssue, redundantSandboxIssue, unwrapCommand, unwrapQuoted }
 export type { AutoCorrectIssue } from './corrections.ts'
 
 /** Cordis plugin name. */
@@ -88,7 +88,8 @@ const HYGIENE_RULES =
   + '- 字符串字段不要整个再用引号包一层:如 {"job_id": "\\"pwsh-1\\""} 应写成 {"job_id": "pwsh-1"},否则工具会拿到带引号的值导致查找失败。\n'
   + '- 调用 edit 时,old_string 必须从最近的 read/grep 输出逐字复制(缩进、引号、注释完全一致),不要凭记忆或推断。\n'
   + '- 若 edit 报 old_string 未找到(FS_EDIT_NOT_FOUND),先 read/grep 目标区域取回原文,再从输出中逐字复制 old_string 重试。\n'
-  + '- 会话已处于 danger-full-access 时,调用 pwsh 不要再传 sandbox_permissions/justification(同级升级必然被拒,报 "not strictly wider");只有先被实际拒绝后才可补传一次更高级别。'
+  + '- 会话已处于 danger-full-access 时,调用 pwsh 不要再传 sandbox_permissions/justification(同级升级必然被拒,报 "not strictly wider");只有先被实际拒绝后才可补传一次更高级别。\n'
+  + '- edit 的 arguments 必须是顶层对象,不要把整段参数塞进单个字段(如 file_path 里再包 file_path/old_string/new_string 一整段 JSON),调用被嵌套一层必然失败。'
 
 /**
  * The corrective notice attached after a failed edit whose old_string did not
@@ -214,6 +215,13 @@ export function apply(ctx: Context, config: Config): void {
       const redundantPerms = redundantSandboxIssue(exec.arguments)
       if (redundantPerms !== undefined) {
         return { kind: 'deny', reason: correctionReason(exec.name, redundantPerms) }
+      }
+      // Whole-call double nesting: one string field holds the entire intended
+      // argument object as text (e.g. `file_path` carrying file_path +
+      // old_string + new_string).
+      const nested = nestedArgsIssue(exec.name, exec.arguments)
+      if (nested !== undefined) {
+        return { kind: 'deny', reason: correctionReason(exec.name, nested) }
       }
       if (!tools.has(exec.name)) return next()
       const issue = commandIssue(exec.arguments)

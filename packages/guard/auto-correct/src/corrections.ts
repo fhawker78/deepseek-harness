@@ -71,6 +71,49 @@ export function redundantSandboxIssue(args: unknown): RedundantSandboxIssue | un
   }
 }
 
+/** Argument keys that mark a parsed object as the intended full argument set. */
+const KNOWN_ARG_KEYS = new Set([
+  'file_path', 'old_string', 'new_string', 'command', 'description', 'arguments',
+  'job_id', 'timeout_ms', 'timeoutMs', 'limit', 'max_tokens', 'run_in_background',
+  'query', 'path', 'pattern', 'agent_id', 'subagent_id', 'name', 'content',
+  'prompt', 'message', 'output', 'value', 'tool',
+])
+
+/**
+ * Whole-call double nesting: one STRING argument field contains the entire
+ * intended argument object as text — e.g. `"file_path": "{file_path: ...,
+ * old_string: ..., new_string: ...}"`. The call is wrapped one level too deep;
+ * the inner parsed object IS the corrected arguments.
+ */
+export function nestedArgsIssue(tool: string, args: unknown): AutoCorrectIssue | undefined {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return undefined
+  const record = args as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    const value = record[key]
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (!trimmed.startsWith('{')) continue
+    let inner: unknown
+    try {
+      inner = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) continue
+    const innerKeys = Object.keys(inner as Record<string, unknown>)
+    const hits = innerKeys.filter(k => KNOWN_ARG_KEYS.has(k))
+    if (hits.length >= 2) {
+      return {
+        tool,
+        problem: `arguments.${key} 整个被包成了 JSON 对象(内含 ${hits.join('/')} 等参数键),调用被嵌套了一层;应直接用内层对象作为 arguments`,
+        corrected: '',
+        correctedArguments: inner as Record<string, unknown>,
+      }
+    }
+  }
+  return undefined
+}
+
 /** Keys the middleware accepts as the real command payload inside a JSON envelope. */
 const COMMAND_KEYS = ['command', 'cmd', 'Command'] as const
 

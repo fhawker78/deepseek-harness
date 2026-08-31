@@ -270,6 +270,28 @@ describe('redundantSandboxIssue', () => {
   })
 })
 
+describe('nestedArgsIssue', () => {
+  it('detects a whole argument set nested inside one string field', () => {
+    const issue = AutoCorrect.nestedArgsIssue('edit', {
+      file_path: '{"file_path": "D:\\\\dev\\\\Pyenhancer\\\\services\\\\scheduler.py", "old_string": "def _prestore_tail_gain(config: dict, today: str):", "new_string": "async def _prestore_tail_gain(config: dict, today: str):"}',
+    })
+    expect(issue?.problem).toContain('被嵌套了一层')
+    expect(issue?.correctedArguments).toEqual({
+      file_path: 'D:\\dev\\Pyenhancer\\services\\scheduler.py',
+      old_string: 'def _prestore_tail_gain(config: dict, today: str):',
+      new_string: 'async def _prestore_tail_gain(config: dict, today: str):',
+    })
+  })
+
+  it('leaves plain single-key command envelopes and clean calls untouched', () => {
+    // A single-key envelope is the command-wrap case handled elsewhere, not nesting.
+    expect(AutoCorrect.nestedArgsIssue('pwsh', { command: '{"command":"Get-Process"}' })).toBeUndefined()
+    expect(AutoCorrect.nestedArgsIssue('edit', { file_path: 'x', old_string: 'a', new_string: 'b' })).toBeUndefined()
+    expect(AutoCorrect.nestedArgsIssue('edit', null)).toBeUndefined()
+    expect(AutoCorrect.nestedArgsIssue('edit', 42)).toBeUndefined()
+  })
+})
+
 describe('redundant sandbox middleware', () => {
   it('denies a pwsh call carrying redundant sandbox_permissions and hands back the stripped arguments', async () => {
     const ctx = await harness()
