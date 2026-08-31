@@ -20,7 +20,14 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type {
+  PostToolDecision,
+  PreToolDecision,
+  ToolExecution,
+  ToolExecutionResult,
+} from '@deepseek-ai/dsh-tools'
 import { coerceIssue, commandIssue, containsJsonEnvelope, unwrapCommand, unwrapQuoted } from './corrections.ts'
 import type { AutoCorrectIssue } from './corrections.ts'
 
@@ -53,6 +60,14 @@ export interface Config {
    * the full corrected arguments JSON (default `true`).
    */
   coerceTypes?: boolean
+  /**
+   * On a failed `edit` whose reason is an `old_string` mismatch
+   * (`FS_EDIT_NOT_FOUND`), attach a corrective notice telling the model to
+   * re-read the target and copy the old_string verbatim before retrying
+   * (default `true`). The tool-level refusal stays untouched — the fix is
+   * guided, never guessed.
+   */
+  editNudge?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -60,6 +75,7 @@ export const Config: z<Config> = z.object({
   promptSection: z.boolean().default(true),
   denyMalformed: z.boolean().default(true),
   coerceTypes: z.boolean().default(true),
+  editNudge: z.boolean().default(true),
 })
 
 /** The hygiene rules the system-prompt section contributes. */
@@ -69,7 +85,33 @@ const HYGIENE_RULES =
   + '- arguments.command 不能以 { 开头,不能内嵌 {\"command\": ...} 或 {\"arguments\": ...} 这类 JSON 结构。\n'
   + '- 命令应直接以可执行命令开头(如 $env:、Get-Process、python、cmd /c),不要在 command 里再包一层 JSON。\n'
   + '- 参数类型必须正确:数值字段(timeout_ms、limit、max_tokens 等)必须传数字,不能传字符串;布尔字段(run_in_background、checked、enabled 等)必须传 true/false,不能传 "true"/"false" 字符串。\n'
-  + '- 字符串字段不要整个再用引号包一层:如 {"job_id": "\\"pwsh-1\\""} 应写成 {"job_id": "pwsh-1"},否则工具会拿到带引号的值导致查找失败。'
+  + '- 字符串字段不要整个再用引号包一层:如 {"job_id": "\\"pwsh-1\\""} 应写成 {"job_id": "pwsh-1"},否则工具会拿到带引号的值导致查找失败。\n'
+  + '- 调用 edit 时,old_string 必须从最近的 read/grep 输出逐字复制(缩进、引号、注释完全一致),不要凭记忆或推断。\n'
+  + '- 若 edit 报 old_string 未找到(FS_EDIT_NOT_FOUND),先 read/grep 目标区域取回原文,再从输出中逐字复制 old_string 重试。'
+
+/**
+ * The corrective notice attached after a failed edit whose old_string did not
+ * match the target file. It steers the fix (re-read, copy verbatim) instead of
+ * guessing — the tool-level refusal keeps exact-match safety intact.
+ */
+const EDIT_MISMATCH_NUDGE =
+  '[dsh-auto-correct] 工具 edit 的 old_string 与目标文件内容不匹配(FS_EDIT_NOT_FOUND)。\n'
+  + '请先 read 目标文件(或 grep 相关区域)把原文取回,再从 read/grep 输出中逐字复制 '
+  + 'old_string(缩进、引号、注释完全一致)重新发起 edit;不要凭记忆改写或推断拼写。'
+
+/** Whether a tool result is an edit failure caused by an old_string mismatch. */
+function isEditMismatch(result: ToolExecutionResult): boolean {
+  if (!result.isError) return false
+  const text = result.content
+    .map(block => block.type === 'text' ? block.text : '')
+    .join('\n')
+  return text.includes('old_string was not found') || text.includes('FS_EDIT_NOT_FOUND')
+}
+
+/** Prepend our corrective notice while preserving every downstream context. */
+function prependContext(ours: UserMessage, theirs: UserMessage[] | undefined): UserMessage[] {
+  return [ours, ...theirs ?? []]
+}
 
 /**
  * Build the model-facing denial reason from a detected defect: it states the
@@ -112,6 +154,33 @@ export function apply(ctx: Context, config: Config): void {
   const tools = validateTools(config.tools as string[])
   const promptSection = config.promptSection as boolean
   const denyMalformed = config.denyMalformed as boolean
+  const editNudge = config.editNudge as boolean
+
+  if (editNudge) {
+    // Enrich a failed edit whose old_string mismatched: attach the corrective
+    // notice as additional context (preserving downstream decisions) so the
+    // next request tells the model to re-read and copy verbatim.
+    ctx.on('tools/post-execute', async (
+      _exec: ToolExecution,
+      result: Readonly<ToolExecutionResult>,
+      next,
+    ): Promise<PostToolDecision> => {
+      const downstream = await next()
+      if (!isEditMismatch(result)) return downstream
+      const notice = createUserMessage({
+        content: [{ type: 'text', text: EDIT_MISMATCH_NUDGE }],
+        source: { kind: 'plugin', plugin: 'auto-correct', form: 'notice', summary: 'edit old_string mismatch' },
+      })
+      if (downstream.kind === 'block') {
+        return {
+          kind: 'block',
+          feedback: downstream.feedback,
+          additionalContexts: prependContext(notice, downstream.additionalContexts),
+        }
+      }
+      return { ...downstream, additionalContexts: prependContext(notice, downstream.additionalContexts) }
+    })
+  }
 
   if (promptSection) {
     // Global unique-name section: register directly (the `ctx.effect` wrapper

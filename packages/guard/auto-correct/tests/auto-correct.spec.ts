@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
-import * as AutoCorrect from '../src/index.ts'
-import type { Config } from '../src/index.ts'
+import * as AutoCorrect from '@deepseek-ai/dsh-auto-correct'
+import type { Config } from '@deepseek-ai/dsh-auto-correct'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 
 const testToolSignal = new AbortController().signal
@@ -16,6 +17,8 @@ const testToolSignal = new AbortController().signal
 async function harness(config: Config = {}): Promise<Context> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  // AgentLoop injects `sessionProjections`; the testkit does not mount it.
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(AutoCorrect, config)
   // A stand-in for the real pwsh tool: the middleware keys on the tool NAME
@@ -249,6 +252,7 @@ describe('prompt hygiene section', () => {
     const section = assembly.sections.find(s => s.name === 'auto-correct')
     expect(section).toBeDefined()
     expect(section?.text).toContain('arguments.command 必须是纯命令文本')
+    expect(section?.text).toContain('old_string 必须从最近的 read/grep 输出逐字复制')
     // Assembly exposes sections in registry order: the hygiene section sits
     // right after the (dropped-empty) persona — first contributed section.
     expect(assembly.sections.indexOf(section!)).toBeGreaterThan(0)
@@ -258,6 +262,94 @@ describe('prompt hygiene section', () => {
     const ctx = await harness({ promptSection: false })
     const assembly = await ctx.systemPrompt.assemble()
     expect(assembly.sections.some(s => s.name === 'auto-correct')).toBe(false)
+  })
+})
+
+describe('edit mismatch nudge', () => {
+  it('attaches the corrective notice after an old_string-mismatch edit failure', async () => {
+    const ctx = await harness()
+    ctx.tools.register(defineContentToolFixture({
+      name: 'edit',
+      description: 'edit a file',
+      parameters: {},
+      async execute() {
+        throw new Error('old_string was not found in "LiveStrategy.vue"')
+      },
+    }))
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('bad-edit'),
+      name: 'edit',
+      arguments: {
+        file_path: 'D:\\\\dev\\\\Pyweb\\\\src\\\\views\\\\LiveStrategy.vue',
+        old_string: 'getLiveStrategyOrders(50, strat)',
+        new_string: 'getLiveStrategyOrders(500, strat)',
+      },
+    })
+    expect(result.isError).toBe(true)
+    // The raw tool refusal is preserved...
+    expect(resultText(result)).toContain('old_string was not found')
+    // ...and the corrective notice rides along as additional context.
+    const nudge = (result.additionalContexts ?? []).find(ctx0 =>
+      ctx0.content.some(block => block.type === 'text' && (block as { text: string }).text.includes('[dsh-auto-correct]')))
+    expect(nudge).toBeDefined()
+    expect(nudge?.content.map(b => b.type === 'text' ? (b as { text: string }).text : '').join(''))
+      .toContain('old_string 与目标文件内容不匹配')
+    expect(nudge?.content.map(b => b.type === 'text' ? (b as { text: string }).text : '').join(''))
+      .toContain('逐字复制')
+  })
+
+  it('leaves successful edits and unrelated failures untouched', async () => {
+    const ctx = await harness()
+    ctx.tools.register(defineContentToolFixture({
+      name: 'edit',
+      description: 'edit a file',
+      parameters: {},
+      async execute() { return [{ type: 'text', text: 'edited' }] },
+    }))
+    const ok = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('ok-edit'),
+      name: 'edit',
+      arguments: { file_path: 'x', old_string: 'a', new_string: 'b' },
+    })
+    expect(ok).toMatchObject({ isError: false })
+    expect(ok.additionalContexts ?? []).toHaveLength(0)
+
+    ctx.tools.register(defineContentToolFixture({
+      name: 'boom',
+      description: 'throws unrelated',
+      parameters: {},
+      async execute() { throw new Error('disk full') },
+    }))
+    const unrelated = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('boom'),
+      name: 'boom',
+      arguments: {},
+    })
+    expect(unrelated.isError).toBe(true)
+    expect(unrelated.additionalContexts ?? []).toHaveLength(0)
+  })
+
+  it('skips the nudge when editNudge is disabled', async () => {
+    const ctx = await harness({ editNudge: false })
+    ctx.tools.register(defineContentToolFixture({
+      name: 'edit',
+      description: 'edit a file',
+      parameters: {},
+      async execute() {
+        throw new Error('old_string was not found in "LiveStrategy.vue"')
+      },
+    }))
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('bad-edit'),
+      name: 'edit',
+      arguments: { file_path: 'x', old_string: 'a', new_string: 'b' },
+    })
+    expect(result.isError).toBe(true)
+    expect(result.additionalContexts ?? []).toHaveLength(0)
   })
 })
 
